@@ -14,8 +14,10 @@ class Tokenizer:
 
     @classmethod
     def from_files(cls, vocab_filepath, merges_filepath, special_tokens=None):
-        vocab = pickle.load(vocab_filepath)
-        merges = pickle.load(merges_filepath)
+        with open(vocab_filepath, 'rb') as f:
+            vocab = pickle.load(f)
+        with open(merges_filepath, 'rb') as f:
+            merges = pickle.load(f)
         return cls(vocab, merges, special_tokens)
 
     def encode(self, text: str):
@@ -39,7 +41,7 @@ class Tokenizer:
                 if subchunks[-1] != "":
                     new_lst.append(subchunks[-1])
             lst = new_lst
-        
+
         out = []
         GPT2_REGEX = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
         for chunk in lst:
@@ -73,7 +75,12 @@ class Tokenizer:
                 for token in sub_parsed:
                     out.append(self.byte2int[token])
         return out
-    
+
+    def encode_iterable(self, iterable):
+        for s in iterable:
+            for t in self.encode(s):
+                yield t
+
     def decode(self, tokens):
         ret = b''
         for t in tokens:

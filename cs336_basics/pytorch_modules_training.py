@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.init as init
 import math
+import numpy as np
 from einops import reduce
 
 def cross_entropy(logits, targets):
@@ -141,3 +142,37 @@ def gradient_clipping(params, maxg, epsilon=1e-6):
             p.grad = p.grad * maxg / (global_l2+epsilon)
 
     return
+
+def data_loader(x, batch_size, context_length, device):
+    befores = []
+    afters = []
+
+    for _ in range(batch_size):
+        i = np.random.randint(0, len(x)-context_length)
+        befores.append(x[i:i+context_length])
+        afters.append(x[i+1:i+context_length+1])
+
+    befores = np.array(befores)
+    afters = np.array(afters)
+
+    befores = torch.from_numpy(
+        np.ascontiguousarray(befores)
+    ).to(torch.device(device), dtype=torch.long, non_blocking=True)
+    afters = torch.from_numpy(
+        np.ascontiguousarray(afters)
+    ).to(torch.device(device), dtype=torch.long, non_blocking=True)
+    return befores, afters
+
+def save_checkpoint(model, optimizer, iteration, out):
+    ret = {}
+    ret["model"] = model.state_dict()
+    ret["optimizer"] = optimizer.state_dict()
+    ret['iter'] = iteration
+    torch.save(ret, out)
+    return
+
+def load_checkpoint(src, model, optimizer):
+    ret = torch.load(src) 
+    model.load_state_dict(ret["model"])
+    optimizer.load_state_dict(ret["optimizer"])
+    return ret['iter']

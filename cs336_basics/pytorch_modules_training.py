@@ -7,7 +7,7 @@ from einops import reduce
 
 def cross_entropy(logits, targets):
 
-    verbose = True
+    verbose = False
 
     # logits are B, L, V
     if verbose: print("logits", logits.shape)

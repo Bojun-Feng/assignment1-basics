@@ -108,6 +108,9 @@ class Swiglu(nn.Module):
         
         return torch.matmul(temp, self.w2.t())
 
+def silu(in_features):
+    return torch.sigmoid(in_features) * in_features
+
 
 class Rope(nn.Module):
     def __init__(self, d_k: int, max_seq_len: int, base: float = 10000.0, device=None):
@@ -122,8 +125,6 @@ class Rope(nn.Module):
         """
         super().__init__()
         assert d_k % 2 == 0, "d_k must be even"
-
-        print("dk", d_k)
 
         # 1. compute inv_freq for half the dims
         inv_freq = 1.0 / (base ** (torch.arange(0, d_k, 2, device=device).float() / d_k))
@@ -150,7 +151,6 @@ class Rope(nn.Module):
         Returns:
             the same shape as x, with rotary embeddings applied
         """
-        print("x", x.size())
         # lookup sin/cos → shape (..., seq_len, d_k)
         sin = self.sin[token_positions]
         cos = self.cos[token_positions]
@@ -182,7 +182,6 @@ def dot_product_attention(q, k, v, mask=None):
             qkt = qkt.masked_fill(~mask, float("-inf"))
 
         qkt = softmax(qkt, dim=-1)
-        print(qkt.shape)
 
         return qkt @ v
 

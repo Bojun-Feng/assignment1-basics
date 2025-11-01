@@ -11,7 +11,7 @@ from torch import Tensor
 
 import math
 from cs336_basics.tokenizer import Tokenizer
-from cs336_basics.pytorch_modules import Linear, Embedding, RMSNorm, Swiglu, Rope, MultiheadSelfAttention, TransformerBlock, TransformerLM
+from cs336_basics.pytorch_modules import Linear, Embedding, RMSNorm, Swiglu, Rope, MultiheadSelfAttention, TransformerBlock, TransformerLM, silu
 from cs336_basics.pytorch_modules_training import AdamW, learning_rate_schedule, gradient_clipping, data_loader, save_checkpoint, load_checkpoint
 
 def run_linear(
@@ -115,21 +115,14 @@ def run_scaled_dot_product_attention(
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
     d_k = Q.shape[-1]
-    print(Q.shape)
-    print(K.shape)
-    print(V.shape)
-
-    print(mask.shape)
 
     qkt = torch.matmul(Q, K.transpose(-2, -1))
     qkt = qkt / math.sqrt(d_k)
-    print(qkt.shape)
 
     if mask is not None:
         qkt = qkt.masked_fill(~mask, float("-inf"))
 
     qkt = run_softmax(qkt, dim=-1)
-    print(qkt.shape)
 
     return qkt @ V
 
@@ -442,7 +435,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    return silu(in_features)
 
 
 def run_get_batch(
@@ -644,4 +637,151 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    import regex as re
+    from collections import Counter, defaultdict
+    from tqdm import tqdm
+    GPT2_REGEX = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
+    def pretokenize(s, special_tokens, verbose=False):
+        """
+        Parse the given text using GPT-2 regex pattern
+        Return a dict[tuple[bytes], int] Counter
+        """
+        # Use GPT-2 regex to split text into tokens
+
+        normalized_strings = []
+        i = 0
+        while i < len(s):
+            next_pos = len(s)
+            next_sep = None
+            for sep in special_tokens:
+                pos = s.find(sep,i)
+                if pos !=-1 and pos < next_pos:
+                    next_pos = pos
+                    next_sep = sep
+            if next_sep is None:
+                normalized_strings.append(s[i:])
+                break
+            normalized_strings.append(s[i:next_pos])
+            i = next_pos + len(next_sep)
+
+        tokens = []
+        for ns in normalized_strings:
+            tokens.extend(re.findall(GPT2_REGEX, ns))
+        dict_str_to_int = Counter(tokens)
+        dict_byte_to_int = {
+            tuple([i.to_bytes(1, 'big') for i in word.encode('utf-8')]): count
+            for word, count in dict_str_to_int.items()
+        }
+
+        if verbose:
+            print("Pretokenized data (String):")
+            print(json.dumps(dict_str_to_int) + "\n")
+
+        return dict_byte_to_int
+
+    def merge(d, verbose=False):
+        """
+        Perform 1 merge on pretokenized output
+        Return: (new_dict, (token1, token2)) where token1+token2 was the merged pair
+        """
+        def get_max_count_pair(byte_pair_count):
+            if len(byte_pair_count) == 0:
+                return None
+            # Find the pair with highest count, breaking ties by lexicographic order
+            return max(byte_pair_count.items(), key=lambda x: (x[1], x[0]))[0]
+
+        # Count the byte pairs
+        byte_pair_count = defaultdict(int)
+        for byte_lst, count in d.items():
+            for i in range(len(byte_lst)-1):
+                pair = (byte_lst[i], byte_lst[i+1])  # Keep as tuple of individual tokens
+                byte_pair_count[pair] += count
+
+        max_pair = get_max_count_pair(byte_pair_count)
+        if max_pair is None:
+            return d, None
+
+        token1, token2 = max_pair
+        merged_token = token1 + token2
+
+        # Update the Counter by merging the most frequent pair
+        new_d = {}
+        for byte_lst, count in d.items():
+            i = 0
+            new_tuple = []
+            while i < len(byte_lst):
+                if i < len(byte_lst)-1 and byte_lst[i] == token1 and byte_lst[i+1] == token2:
+                    new_tuple.append(merged_token)
+                    i += 2
+                else:
+                    new_tuple.append(byte_lst[i])
+                    i += 1
+            new_d[tuple(new_tuple)] = count
+
+        if verbose:
+            print("Most frequent pair:")
+            print(f"({token1}, {token2})")
+            print("Byte pair counts:")
+            print({f"({str(k[0])[2:-1]}, {str(k[1])[2:-1]})": v for k, v in byte_pair_count.items()})
+            print()
+
+        return new_d, (token1, token2)
+
+    with open(input_path, 'r', encoding='utf-8') as f:
+        text = f.read()
+
+    # Initialize vocabulary with special tokens and byte values
+    vocab = {}
+    token_id = 0
+
+    # Add special tokens first
+    for token in special_tokens:
+        vocab[token_id] = token.encode('utf-8')
+        token_id += 1
+
+    # Add all byte values (0-255)
+    for i in range(256):
+        vocab[token_id] = i.to_bytes(1, 'big')
+        token_id += 1
+
+    # Pretokenize the text
+    counter = pretokenize(text, special_tokens)
+    merges = []
+
+    # Calculate how many merges we can perform
+    initial_vocab_size = len(special_tokens) + 256
+    max_merges = vocab_size - initial_vocab_size
+
+    print("Starting formal training")
+    print(f"Performing up to {max_merges} merge operations")
+
+    # Perform BPE merges with progress bar
+    with tqdm(total=max_merges, desc="BPE Merges", unit="merge") as pbar:
+        for i in range(max_merges):
+            counter, merge_pair = merge(counter)
+
+            if merge_pair is None:
+                # No more pairs to merge
+                print(f"Training completed early - no more pairs to merge after {i} operations")
+                break
+
+            token1, token2 = merge_pair
+            merges.append((token1, token2))
+
+            # Add merged token to vocabulary
+            merged_token = token1 + token2
+            vocab[token_id] = merged_token
+            token_id += 1
+
+            # Update progress bar
+            pbar.update(1)
+
+            # Log progress every 1000 merges
+            if (i + 1) % 1000 == 0:
+                print(f"Completed {i + 1}/{max_merges} merge operations")
+
+    print(f"BPE training completed. Final vocabulary size: {len(vocab)}")
+    print(f"Total merge operations performed: {len(merges)}")
+
+    return vocab, merges
